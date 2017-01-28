@@ -23,16 +23,18 @@ struct binder
 {
 private:
     template <typename F_, typename ... Bound_Args_>
-    friend binder<F_, Bound_Args_ ...> m_bind(F_&&, Bound_Args_&& ...);
+    friend binder<F_, Bound_Args_ ...> bind(F_&&, Bound_Args_&& ...);
 
-    F f;
-    std::tuple<Bound_Args ...> tuple;
+    typedef typename std::decay_t<F> F_t;
+    typedef typename std::tuple<std::decay_t<Bound_Args> ...> tuple_t;
+
+    F_t f;
+    tuple_t tuple;
 
     binder(F&& f, Bound_Args&& ... bound_args) :
             f(std::forward<F>(f)),
             tuple(std::forward<Bound_Args>(bound_args) ...)
     {}
-
 
     template <size_t ...>
     struct seq_of_indices {};
@@ -45,48 +47,27 @@ private:
         typedef seq_of_indices<S ...> type;
     };
 
-
     template <typename Bound_Arg, typename ... Const_Args>
-    Bound_Arg&& get_arg (Bound_Arg&& bound_arg, Const_Args&& ... const_args) const {
+    auto&& get_arg (Bound_Arg& bound_arg, Const_Args& ... const_args) {
         return bound_arg;
     };
 
+
     template <size_t N, typename ... Const_Args>
-    auto&& get_arg (placeholder<N>&, Const_Args&& ... const_args) const {
+    auto&& get_arg (placeholder<N>&, Const_Args& ... const_args) {
         return std::get<N>(std::forward_as_tuple(const_args ...));
     };
 
+
     template <typename Rec_Call, typename ... Rec_Bound_Args, typename ... Const_Args>
-    auto get_arg(binder<Rec_Call, Rec_Bound_Args ...>& rec_binder, Const_Args&& ... const_args) const {
-        return rec_binder(std::forward<Const_Args>(const_args) ... );
+    auto get_arg(binder<Rec_Call, Rec_Bound_Args ...>& rec_binder, Const_Args& ... const_args) {
+        return rec_binder(const_args ...);
     };
 
-
-    struct free_function_invoker {
-        template <typename ... Const_Args>
-        auto invoke(F const& func, Const_Args&& ... const_args) const {
-            return func(std::forward<Const_Args>(const_args) ...);
-        }
-    };
-
-    struct member_function_invoker {
-        template <typename Object, typename ... Const_Args>
-        auto invoke(F const& func, Object&& obj, Const_Args&& ... const_args) const {
-            return (obj->*func)(std::forward<Const_Args>(const_args) ...);
-        }
-    };
-
-    template <bool B, typename True, typename False>
-    using conditional_t = typename std::conditional<B, True, False>::type;
-
-    using invoker_t = conditional_t <std::is_member_function_pointer<F>::value,
-            member_function_invoker, free_function_invoker>;
-
-    invoker_t invoker;
 
     template <size_t ... N, typename ... Const_Args>
-    auto call_function(seq_of_indices<N ...>, Const_Args&& ... const_args) {
-        return invoker.invoke(f, get_arg(std::get<N>(tuple), const_args ...) ... );
+    auto call_function(const seq_of_indices<N ...>&, Const_Args&& ... const_args) {
+        return f(get_arg(std::get<N>(tuple), const_args ...) ... );
     };
 
 public:
@@ -94,13 +75,13 @@ public:
     auto operator() (Const_Args&& ... const_args) {
         return call_function(typename unpack_tuple<
                                      std::tuple_size<
-                                             std::tuple<Bound_Args ...> >::value>::type(),
+                                             std::tuple<std::decay_t<Bound_Args> ...> >::value>::type(),
                              std::forward<Const_Args>(const_args) ...);
     }
 };
 
 template <typename F, typename ... Bound_Args>
-binder<F, Bound_Args ...> m_bind(F&& f, Bound_Args&& ... bound_args) {
+binder<F, Bound_Args ...> bind(F&& f, Bound_Args&& ... bound_args) {
     return binder<F, Bound_Args ...>(std::forward<F>(f), std::forward<Bound_Args>(bound_args) ...);
 };
 
