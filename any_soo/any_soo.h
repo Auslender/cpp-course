@@ -59,26 +59,56 @@ public:
     }
 
     template <typename T>
-    using to_heap = typename std::integral_constant<bool, (sizeof(T) > BUFFER_SIZE)>;
+    using local = typename std::integral_constant<bool, (sizeof(T) <= BUFFER_SIZE)
+                                                        && std::is_nothrow_move_constructible<T>::value>;
 
-private:
-    template <typename T, typename B = typename to_heap<T>::type>
-    void constructor(T object)
+    struct is_small_tag{};
+    struct is_big_tag{};
+
+    template<typename T>
+    struct switch_tag;
+
+    template<typename T, bool>
+    struct checked_tag;
+
+    template<typename T>
+    struct checked_tag<T, true> {
+        typedef is_small_tag tag;
+    };
+
+    template<typename T>
+    struct checked_tag<T, false> {
+        typedef is_big_tag tag;
+    };
+
+    template<typename T>
+    struct switch_tag {
+        typedef typename checked_tag<T, local<T>::value>::tag tag;
+    };
+
+    template <typename T>
+    void constructor(T object, is_small_tag)
     {
-        if (!B::value) {
-            size = SMALL;
-            new(&buffer) T(object);
-            destructor = buffer_destructor<T>;
-        } else {
-            size = BIG;
-            heap_ptr = new T(object);
-            destructor = heap_destructor<T>;
-        }
+        size = SMALL;
+        new(&buffer) T(object);
+        destructor = buffer_destructor<T>;
         copy = base_copy<T>;
         move = base_move<T>;
         allocator = base_alloc<T>;
         m_type = base_type<T>;
     }
+
+    template <typename T>
+    void constructor(T object, is_big_tag)
+    {
+        size = BIG;
+        heap_ptr = new T(object);
+        destructor = heap_destructor<T>;
+        copy = base_copy<T>;
+        move = base_move<T>;
+        allocator = base_alloc<T>;
+        m_type = base_type<T>;
+    };
 
 public:
 
@@ -87,9 +117,8 @@ public:
         typename std::enable_if<!std::is_same<any&, T>::value>::type* = 0,
         typename std::enable_if<!std::is_const<T>::value>::type* = 0)
     {
-        constructor<typename std::decay<T>::type >(std::forward<T>(object));
+        constructor<typename std::decay<T>::type >(std::forward<T>(object), typename switch_tag<T>::tag());
     }
-
 
     any(): size(NONE),
            buffer({}),
@@ -136,16 +165,56 @@ public:
         clear();
     }
 
-    any & swap(any& other) {
+//    any & swap(any& other) {
+//        std::swap(this->size, other.size);
+//        std::swap(buffer, other.buffer);
+//        std::swap(this->destructor, other.destructor);
+//        std::swap(this->copy, other.copy);
+//        std::swap(this->move, other.move);
+//        std::swap(this->allocator, other.allocator);
+//        std::swap(this->m_type, other.m_type);
+//        return *this;
+//    }
+
+    any& swap(any& other) {
+        if (this->size  == other.size) {
+            if (this->size == SMALL && other.size == SMALL) {
+                std::aligned_storage<BUFFER_SIZE, BUFFER_SIZE>::type temp;
+                this->move(&temp, &this->buffer);
+                this->destructor(&this->buffer);
+
+                other.move(&this->buffer, &other.buffer);
+                other.destructor(&other.buffer);
+
+                this->move(&other.buffer, &temp);
+                this->destructor(&temp);
+            } else if (this->size == BIG && other.size == BIG) {
+                std::swap(this->heap_ptr, other.heap_ptr);
+            }
+        } else if (this->size == SMALL && other.size == BIG) {
+            void* temp = other.heap_ptr;
+            this->move(temp, &this->buffer);
+            this->destructor(&this->buffer);
+            this->heap_ptr = temp;
+        } else if (this->size == NONE && other.size == SMALL) {
+            other.move(&this->buffer, &other.buffer);
+            other.destructor(&other.buffer);
+        } else if (this->size == NONE && other.size == BIG) {
+            other.move(this->heap_ptr, other.heap_ptr);
+        } else {
+            other.swap(*this);
+        }
+
         std::swap(this->size, other.size);
-        std::swap(this->buffer, other.buffer);
         std::swap(this->destructor, other.destructor);
         std::swap(this->copy, other.copy);
         std::swap(this->move, other.move);
         std::swap(this->allocator, other.allocator);
         std::swap(this->m_type, other.m_type);
+
         return *this;
     }
+
 
     bool empty() const {
         return (size == NONE);
